@@ -421,6 +421,7 @@ fn platform(uname: &str) -> String {
     let os = match words.next() {
         Some("Linux") => "linux",
         Some("Darwin") => "macos",
+        Some("FreeBSD") => "freebsd",
         Some(os) if os.starts_with("MINGW") || os.starts_with("MSYS") => "windows",
         other => other.unwrap_or("?"),
     };
@@ -647,6 +648,7 @@ mod tests {
         assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok());
         assert_eq!(platform("Darwin arm64"), "macos aarch64");
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
+        assert_eq!(platform("FreeBSD amd64"), "freebsd x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
         assert_eq!(platform("MSYS_NT-10.0 x86_64"), "windows x86_64");
     }
