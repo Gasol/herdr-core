@@ -153,15 +153,14 @@ impl Drop for Session {
         let _ = self.try_hc(&["server", "stop"]);
         // Anything still running from this session is a bug; never leave it behind.
         let mut leaks = Vec::new();
-        let ours = format!("XDG_STATE_HOME={}\0", self.root.join("state").display());
+        let ours = format!("XDG_STATE_HOME={}", self.root.join("state").display());
         // A process in the act of exiting is not a leak: give stragglers a moment.
         let start = Instant::now();
         while !procs_with(&ours).is_empty() && start.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(50));
         }
         for pid in procs_with(&ours) {
-            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            let cmdline = herdr_core::foreground::about(pid).map(|f| f.argv.join(" ")).unwrap_or_default();
             let test = std::thread::current().name().unwrap_or("?").to_string();
             let note = format!("LEAK in {test}: pid {pid} ({}) still running after server stop\n", cmdline.trim());
             eprint!("{note}");
@@ -206,25 +205,49 @@ impl Conn {
     }
 }
 
-/// Processes (other than us) whose environment mentions `needle`. Linux
-/// only: macOS shows no other process's environment (`ps -E` prints none,
-/// checked on macOS 27), so there the leak check finds nothing; the ghost
-/// tests are what cover leftovers on macOS.
-fn procs_with(needle: &str) -> Vec<i32> {
+/// Processes (other than us) whose environment holds `var` (`KEY=value`).
+/// macOS shows no other process's environment (`ps -E` prints none, checked
+/// on macOS 27), so there the leak check finds nothing; the ghost tests are
+/// what cover leftovers on macOS.
+fn procs_with(var: &str) -> Vec<i32> {
     if cfg!(target_os = "macos") {
         return Vec::new();
     }
     let me = std::process::id() as i32;
-    std::fs::read_dir("/proc")
-        .expect("the leak check needs /proc")
-        .flatten()
+    let all = environments();
+    // A listing that misses us (no /proc, no procstat) would pass every leak.
+    assert!(all.iter().any(|(pid, _)| *pid == me), "the leak check sees no processes");
+    all.into_iter().filter(|(pid, env)| *pid != me && env.iter().any(|e| e == var)).map(|(pid, _)| pid).collect()
+}
+
+/// Every process with its environment entries. Read apart from hc's own
+/// process code (`sweep`), so a bug there can't hide the leak it causes.
+#[cfg(not(target_os = "freebsd"))]
+fn environments() -> Vec<(i32, Vec<String>)> {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+    let entries = |env: Vec<u8>| env.split(|b| *b == 0).map(|e| String::from_utf8_lossy(e).into_owned()).collect();
+    dir.flatten()
         .filter_map(|e| {
-            let pid: i32 = e.file_name().to_string_lossy().parse().ok()?;
-            let env = std::fs::read(e.path().join("environ")).ok()?;
-            let hit = env.windows(needle.len()).any(|w| w == needle.as_bytes());
-            (hit && pid != me).then_some(pid)
+            Some((e.file_name().to_str()?.parse().ok()?, entries(std::fs::read(e.path().join("environ")).ok()?)))
         })
         .collect()
+}
+
+/// FreeBSD mounts no /proc; procstat reads environments through libprocstat.
+/// Its text, not its JSON: libxo copies bytes that aren't UTF-8 into the JSON
+/// as they are, so one such environment anywhere would hide every process.
+/// Entries come apart at spaces, which test paths never hold.
+#[cfg(target_os = "freebsd")]
+fn environments() -> Vec<(i32, Vec<String>)> {
+    let out = Command::new("procstat").args(["-e", "-a"]).stderr(Stdio::null()).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let entries = |line: &str| {
+        let mut words = line.split(' ').filter(|w| !w.is_empty());
+        let pid = words.next()?.parse().ok()?;
+        words.next(); // the command name
+        Some((pid, words.map(String::from).collect()))
+    };
+    text.lines().filter_map(entries).collect()
 }
 
 /// The env that points `local`'s core at a fake `ssh`: a target containing a host's name
