@@ -22,6 +22,11 @@ pub fn remember_exe() {
 /// The package manager this hc came from, or "system package manager" as a
 /// compatibility marker when its folder isn't writable. None for a replaceable install.
 pub fn installed_by() -> Option<&'static str> {
+    // A package build names its manager (the FreeBSD port sets pkg): its path
+    // looks like any other, and root can write to that folder.
+    if let Some(manager) = option_env!("HC_INSTALLED_BY") {
+        return Some(manager);
+    }
     let exe = EXE.get().cloned().or_else(|| std::env::current_exe().ok())?;
     installed_by_path(&exe)
 }

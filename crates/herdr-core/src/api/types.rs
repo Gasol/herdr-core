@@ -152,7 +152,7 @@ pub struct StatusResult {
     pub holders: Vec<HolderInfo>,
     pub live: usize,
     pub finished: usize,
-    /// The package manager this hc came from (homebrew, nix, mise, or
+    /// The package manager this hc came from (homebrew, nix, mise, pkg, or
     /// system package manager): it updates hc, `hc update` won't.
     /// Null for a replaceable plain install.
     pub installed_by: Option<String>,

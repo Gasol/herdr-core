@@ -61,6 +61,7 @@ pub(super) fn refuse_managed() -> Result<(), RpcError> {
         "homebrew" => "brew upgrade herdr-core",
         "nix" => "update it in your Nix configuration",
         "mise" => "mise upgrade herdr-core",
+        "pkg" => "pkg upgrade herdr-core",
         _ => {
             return Err(RpcError::new(
                 "refused",
