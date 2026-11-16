@@ -528,7 +528,8 @@ pub async fn exited(child: &mut tokio::process::Child) {
     let _ = tokio::task::spawn_blocking(move || {
         loop {
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            let done = unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0;
+            let done =
+                unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0;
             if done || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                 return;
             }
@@ -628,7 +629,19 @@ pub fn boot_id() -> io::Result<Option<String>> {
         }
         Ok(Some(value.into()))
     }
-    #[cfg(not(target_os = "macos"))]
+    // FreeBSD has no boot UUID. Stepping the clock moves boot time, which only
+    // makes a handoff look like another boot's: it is dropped, never misused.
+    #[cfg(target_os = "freebsd")]
+    {
+        let mut t: libc::timeval = unsafe { std::mem::zeroed() };
+        let mut size = std::mem::size_of::<libc::timeval>();
+        let name = c"kern.boottime".as_ptr();
+        if unsafe { libc::sysctlbyname(name, (&raw mut t).cast(), &mut size, std::ptr::null(), 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Some(format!("{}.{:06}", t.tv_sec, t.tv_usec)))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
     {
         let value = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
         let value = value.trim();

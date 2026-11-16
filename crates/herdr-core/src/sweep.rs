@@ -52,6 +52,15 @@ fn now() -> u64 {
     (ns(libc::CLOCK_MONOTONIC).min(ns(libc::CLOCK_BOOTTIME)) * ticks / 1_000_000_000) as u64
 }
 
+/// FreeBSD, in microseconds of uptime, the clock process starts are kept on.
+/// The coarse reading is never ahead of the precise one a later fork stamps.
+#[cfg(target_os = "freebsd")]
+fn now() -> u64 {
+    let mut t: libc::timespec = unsafe { std::mem::zeroed() };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_FAST, &mut t) };
+    t.tv_sec as u64 * 1_000_000 + t.tv_nsec as u64 / 1000
+}
+
 #[cfg(windows)]
 fn now() -> u64 {
     0
@@ -176,6 +185,33 @@ fn processes() -> Vec<(i32, i32, u64)> {
 #[cfg(target_os = "macos")]
 fn environ(pid: i32) -> Option<Vec<u8>> {
     crate::foreground::procargs(pid).map(|(_, env)| env)
+}
+
+/// `ki_start` is boot time plus the uptime the process started at, so taking
+/// boot time off again puts it on `now()`'s clock.
+#[cfg(target_os = "freebsd")]
+fn processes() -> Vec<(i32, i32, u64)> {
+    use crate::foreground::{kern_proc, leading, sysctl};
+    let micros = |t: libc::timeval| (t.tv_sec as u64 * 1_000_000).saturating_add(t.tv_usec as u64);
+    let boot = sysctl(&[libc::CTL_KERN, libc::KERN_BOOTTIME]).and_then(|b| leading::<libc::timeval>(&b));
+    let (Some(boot), Some(all)) = (boot, kern_proc(libc::KERN_PROC_PROC, 0)) else {
+        return Vec::new();
+    };
+    let Some(first) = leading::<libc::kinfo_proc>(&all) else {
+        return Vec::new();
+    };
+    // Records are as long as this kernel's kinfo_proc, which may outgrow libc's.
+    let step = (first.ki_structsize as usize).max(std::mem::size_of::<libc::kinfo_proc>());
+    all.chunks_exact(step)
+        .filter_map(leading::<libc::kinfo_proc>)
+        .filter(|p| p.ki_stat != libc::SZOMB)
+        .map(|p| (p.ki_pid, p.ki_ppid, micros(p.ki_start).saturating_sub(micros(boot))))
+        .collect()
+}
+
+#[cfg(target_os = "freebsd")]
+fn environ(pid: i32) -> Option<Vec<u8>> {
+    crate::foreground::kern_proc(libc::KERN_PROC_ENV, pid).filter(|env| !env.is_empty())
 }
 
 #[cfg(all(test, unix))]

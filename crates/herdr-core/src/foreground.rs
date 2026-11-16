@@ -92,6 +92,50 @@ pub fn about(pid: i32) -> Option<Foreground> {
     Some(Foreground { pid, name, argv, cwd })
 }
 
+#[cfg(target_os = "freebsd")]
+pub fn about(pid: i32) -> Option<Foreground> {
+    let info: libc::kinfo_proc = leading(&kern_proc(libc::KERN_PROC_PID, pid)?)?;
+    let name = unsafe { std::ffi::CStr::from_ptr(info.ki_comm.as_ptr()) }.to_string_lossy().into_owned();
+    let args = kern_proc(libc::KERN_PROC_ARGS, pid)?;
+    let argv =
+        args.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+    let file: libc::kinfo_file = leading(&kern_proc(libc::KERN_PROC_CWD, pid)?)?;
+    let cwd = unsafe { std::ffi::CStr::from_ptr(file.kf_path.as_ptr()) }.to_string_lossy().into_owned();
+    Some(Foreground { pid, name, argv, cwd })
+}
+
+/// `kern.proc.<op>.<pid>`, as the kernel wrote it.
+#[cfg(target_os = "freebsd")]
+pub fn kern_proc(op: libc::c_int, pid: i32) -> Option<Vec<u8>> {
+    sysctl(&[libc::CTL_KERN, libc::KERN_PROC, op, pid])
+}
+
+/// None when the name doesn't exist, or the process is gone or not ours to read.
+#[cfg(target_os = "freebsd")]
+pub fn sysctl(mib: &[libc::c_int]) -> Option<Vec<u8>> {
+    let call = |buf: *mut libc::c_void, size: &mut libc::size_t| unsafe {
+        libc::sysctl(mib.as_ptr(), mib.len() as libc::c_uint, buf, size, std::ptr::null(), 0)
+    };
+    let mut size = 0;
+    if call(std::ptr::null_mut(), &mut size) != 0 {
+        return None;
+    }
+    // Room for processes started between the two calls.
+    size += size / 8;
+    let mut buf = vec![0u8; size];
+    if call(buf.as_mut_ptr().cast(), &mut size) != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    Some(buf)
+}
+
+/// The `T` that `bytes` starts with, if they are long enough to hold one.
+#[cfg(target_os = "freebsd")]
+pub fn leading<T>(bytes: &[u8]) -> Option<T> {
+    (bytes.len() >= std::mem::size_of::<T>()).then(|| unsafe { bytes.as_ptr().cast::<T>().read_unaligned() })
+}
+
 #[cfg(target_os = "macos")]
 pub fn about(pid: i32) -> Option<Foreground> {
     let mut name = [0u8; 256];
