@@ -72,18 +72,29 @@ fn an_install_in_a_read_only_folder_explains_how_to_update_it() {
     std::fs::create_dir(&dir).unwrap();
     s.bin = dir.join("herdr-core");
     std::fs::copy(BIN, &s.bin).unwrap();
+    // A newer release with no build for this machine: hc must refuse before it downloads.
+    std::fs::create_dir_all(s.root.join("core")).unwrap();
+    std::fs::write(
+        s.root.join("core/latest.json"),
+        json!({"version": "999.0.0", "generation": herdr_core::api::GENERATION, "targets": {}}).to_string(),
+    )
+    .unwrap();
+    s.env.push(("HERDR_RELEASES_URL".into(), format!("file://{}", s.root.display())));
     s.json(&["server", "start"]);
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
     let status = s.cmd().args(["server", "status"]).output().unwrap();
-    let update = s.cmd().args(["update", "--from", BIN]).output().unwrap();
+    let updates = [s.cmd().args(["update", "--from", BIN]).output().unwrap(), s.cmd().arg("update").output().unwrap()];
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["installed_by"], "system package manager");
-    let error: Value = serde_json::from_slice(&update.stderr).unwrap();
-    assert!(!update.status.success());
-    assert_eq!(error["error"]["kind"], "refused", "{error}");
-    assert_eq!(error["error"]["message"], format!("{} isn't writable by you", dir.canonicalize().unwrap().display()));
-    assert_eq!(error["error"]["hint"], "update herdr-core the way it was installed (package manager, or sudo)");
+    for update in updates {
+        let error: Value = serde_json::from_slice(&update.stderr).unwrap();
+        assert!(!update.status.success());
+        assert_eq!(error["error"]["kind"], "refused", "{error}");
+        let folder = dir.canonicalize().unwrap();
+        assert_eq!(error["error"]["message"], format!("{} isn't writable by you", folder.display()));
+        assert_eq!(error["error"]["hint"], "update herdr-core the way it was installed (package manager, or sudo)");
+    }
 }
 
 #[test]

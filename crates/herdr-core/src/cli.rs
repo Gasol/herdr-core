@@ -601,6 +601,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
                 let human = format!("{this} is up to date (latest release: {})", m.version);
                 up_to_date(&paths, &m.version, human)?
             } else {
+                refuse_managed()?;
                 let file = crate::releases::download(
                     &m,
                     &crate::releases::this_target(),
