@@ -335,10 +335,9 @@ async fn dial_once(
     let mut params = json!({"generation": crate::api::GENERATION});
     params.as_object_mut().unwrap().extend(hello.as_object().cloned().unwrap_or_default());
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": "hello", "params": params});
-    let _ = stdin.write_all(format!("{req}\n").as_bytes()).await;
     // A login may print a banner first: the reply is the first line that is one.
     let mut lines = BufReader::new(stdout);
-    let reply = async {
+    let read_reply = async {
         let mut line = String::new();
         loop {
             line.clear();
@@ -351,7 +350,19 @@ async fn dial_once(
             }
         }
     };
-    let reply = tokio::time::timeout(Duration::from_secs(20), reply).await;
+    // Written beside the read, not before it: when the child has already exited, FreeBSD's
+    // kqueue reports nothing for the pipe, so a write waiting for it would never end.
+    let reply = tokio::time::timeout(Duration::from_secs(20), async {
+        let write_hello = async {
+            let _ = stdin.write_all(format!("{req}\n").as_bytes()).await;
+            std::future::pending().await
+        };
+        tokio::select! {
+            reply = read_reply => reply,
+            reply = write_hello => reply,
+        }
+    })
+    .await;
     let reply = match reply {
         Err(_) => return Err(unreachable(to, "no answer within 20 s")),
         Ok(Some(reply)) => reply,

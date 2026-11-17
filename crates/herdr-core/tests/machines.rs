@@ -516,3 +516,23 @@ fn adding_says_what_went_wrong_and_saves_nothing() {
     assert_eq!(kind(&["rm", "nope"]), "machine_unknown");
     assert_eq!(s.json(&["machine", "ls"])["machines"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn a_connection_that_ends_before_it_reads_does_not_hang_the_add() {
+    let mut s = Session::new();
+    let wrapper = s.root.join("closed-ssh");
+    std::fs::write(&wrapper, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+    // The race is about when the child exits: parallel adds keep the core busy enough to lose it.
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for _ in 0..40 {
+                    let (_, error) = s.err(&["--json", "machine", "add", "posix"]);
+                    assert_eq!(error["error"]["kind"], "unreachable", "{error}");
+                }
+            });
+        }
+    });
+}
