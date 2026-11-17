@@ -42,8 +42,15 @@ impl Session {
                 eprintln!("test binary still running after {limit} s: cleaning up and aborting");
                 // Abort skips every Drop, so end this binary's sessions here first.
                 let ours = test_tmp().join(format!("hc-test-{}-", std::process::id())).display().to_string();
-                for pid in procs_with(&ours) {
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                // Other tests keep starting servers while this runs, so scan again until none is left.
+                for _ in 0..10 {
+                    let pids = procs_with(&format!("HOME={ours}"));
+                    if pids.is_empty() {
+                        break;
+                    }
+                    for pid in pids {
+                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                    }
                 }
                 for dir in std::fs::read_dir(test_tmp()).into_iter().flatten().flatten() {
                     if dir.path().display().to_string().starts_with(&ours) {
@@ -205,11 +212,11 @@ impl Conn {
     }
 }
 
-/// Processes (other than us) whose environment holds `var` (`KEY=value`).
+/// Processes (other than us) with an environment entry that starts with `prefix`.
 /// macOS shows no other process's environment (`ps -E` prints none, checked
 /// on macOS 27), so there the leak check finds nothing; the ghost tests are
 /// what cover leftovers on macOS.
-fn procs_with(var: &str) -> Vec<i32> {
+fn procs_with(prefix: &str) -> Vec<i32> {
     if cfg!(target_os = "macos") {
         return Vec::new();
     }
@@ -217,7 +224,10 @@ fn procs_with(var: &str) -> Vec<i32> {
     let all = environments();
     // A listing that misses us (no /proc, no procstat) would pass every leak.
     assert!(all.iter().any(|(pid, _)| *pid == me), "the leak check sees no processes");
-    all.into_iter().filter(|(pid, env)| *pid != me && env.iter().any(|e| e == var)).map(|(pid, _)| pid).collect()
+    all.into_iter()
+        .filter(|(pid, env)| *pid != me && env.iter().any(|e| e.starts_with(prefix)))
+        .map(|(pid, _)| pid)
+        .collect()
 }
 
 /// Every process with its environment entries. Read apart from hc's own
