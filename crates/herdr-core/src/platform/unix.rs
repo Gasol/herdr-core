@@ -152,6 +152,16 @@ pub fn is_link(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
+// FreeBSD 14 has no renameat2: claim the name with O_EXCL, then rename over our own empty file.
+#[cfg(target_os = "freebsd")]
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+    std::fs::rename(from, to).inspect_err(|_| {
+        let _ = std::fs::remove_file(to);
+    })
+}
+
+#[cfg(not(target_os = "freebsd"))]
 pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
